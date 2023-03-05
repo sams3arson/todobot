@@ -30,7 +30,7 @@ def get(filename: Path | None = None) -> Credentials:
     if api_id.isdigit():
         api_id = int(api_id)
     else:
-        raise InvalidCredentials("api_id is not a integer")
+        raise InvalidCredentials("api_id is not an integer")
     return Credentials(api_id=api_id, api_hash=api_hash, bot_token=bot_token)
 
 
@@ -40,7 +40,7 @@ def read_config(filename: Path) -> list[str]:
 
     if CONFIG_BOTSECTION not in parser:
         raise InvalidCredentials(f"config file is not valid: {CONFIG_BOTSECTION}"\
-                " not found")
+                "section not found")
 
     try:
         result = [str(parser[CONFIG_BOTSECTION][var_name.lower()]) for var_name
