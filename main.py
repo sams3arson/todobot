@@ -1,6 +1,7 @@
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton,\
         CallbackQuery
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from tools import creds
 from states import State
 import settings
@@ -10,6 +11,7 @@ import re
 
 user_states = dict()
 cached_markup = dict()
+remind_jobs = dict()
 credentials = creds.get(settings.CREDS_FILE)
 api_id, api_hash, bot_token = credentials.api_id, credentials.api_hash,\
         credentials.bot_token
@@ -19,10 +21,13 @@ cursor = db.cursor()
 cursor.execute("""CREATE TABLE IF NOT EXISTS todos 
                 (id integer primary key autoincrement, user_id INTEGER, 
                task TEXT, completed INTEGER)""")
+cursor.execute("""CREATE TABLE IF NOT EXISTS reminders
+               (id integer primary key autoincrement, user_id INTEGER,
+               interval INTEGER)""")
 db.commit()
 
+scheduler = AsyncIOScheduler()
 app = Client("todo_bot", api_id, api_hash, bot_token)
-
 
 def filter_state_wrapper(state):
     """Filter wrapper for Pyrogram handler of messages. Pass state 
@@ -47,6 +52,30 @@ def filter_callback_wrapper(pattern):
     return filter_inner
 
 
+def start_job_interval(client: Client, user_id: int, interval: int):
+    return scheduler.add_job(send_reminder, "interval", minutes=interval,
+                             args=(client, user_id))
+
+
+def start_intervals(client: Client):
+    cursor.execute("SELECT user_id, interval FROM reminders")
+    intervals_raw = cursor.fetchall()
+
+    for user_id, interval in intervals_raw:
+        remind_jobs[user_id] = start_job_interval(client, user_id, interval)
+
+
+async def send_reminder(client: Client, user_id: int):
+    cursor.execute("SELECT * FROM todos WHERE user_id = ? AND completed = 0",
+                   (user_id,))
+    tasks_raw = cursor.fetchall()
+
+    if not tasks_raw:
+        return
+    return await client.send_message(user_id, "Не расслабляйтесь, у вас еще "\
+            f"{len(tasks_raw)} невыполненных задач!")
+
+
 @app.on_message(filters.command(["start"]))
 async def start(client: Client, message: Message):
     user_id = message.from_user.id
@@ -65,9 +94,35 @@ async def help(client: Client, message: Message):
 async def add(client: Client, message: Message):
     user_id = message.from_user.id
     await message.reply("Введите название задачи.")
-
     user_states[user_id] = State.INPUT_TASK
-    return
+
+
+@app.on_message(filters.command(["current"]))
+async def add(client: Client, message: Message):
+    user_id = message.from_user.id
+    
+    cursor.execute("SELECT completed FROM todos WHERE user_id = ?", (user_id,))
+    all_tasks = cursor.fetchall()
+    compl_tasks = [task for task in all_tasks if task[0] == 1]
+
+    cursor.execute("SELECT interval FROM reminders WHERE user_id = ?", (user_id,))
+    intervals_raw = cursor.fetchall()
+
+    if intervals_raw:
+        interval_text = f"каждые {intervals_raw[0][0]} минут"
+    else:
+        interval_text = "отключены"
+
+    return await message.reply(texts.CURRENT_TEXT.format(len(all_tasks),
+         len(compl_tasks), len(all_tasks) - len(compl_tasks), interval_text))
+
+
+@app.on_message(filters.command(["set_reminder"]))
+async def set_reminder(client: Client, message: Message):
+    user_id = message.from_user.id
+    user_states[user_id] = State.INPUT_REMIND_TIME
+    return await message.reply("Введите любой интервал получения напоминаний о "\
+            "невыполненных задачах в минутах (0, чтобы отключить):")
 
 
 @app.on_message(filters.command(["complete", "delete"]))
@@ -116,7 +171,6 @@ async def task_list(client: Client, message: Message):
         answer += f"- {task_name}\n"
 
     return await message.reply(answer)
-
 
 
 @app.on_message(filters.command(["listall"]))
@@ -221,6 +275,49 @@ async def task_name(client: Client, message: Message):
     db.commit()
     return await message.reply(f"Задача {task_name} добавлена в ваш список задач.")
 
+
+@app.on_message(filters.create(filter_state_wrapper(State.INPUT_REMIND_TIME)))
+async def reminder_time(client: Client, message: Message):
+    user_id = message.from_user.id
+    interval = message.text
+
+    if not interval.isdigit():
+        return await message.reply("Интервал должен быть целым числом в минутах.")
+    interval = int(interval)
+    user_states[user_id] = State.NO_STATE
+
+    cursor.execute("SELECT * FROM reminders WHERE user_id = ?", (user_id,))
+    reminders_raw = cursor.fetchall()
+    if reminders_raw:
+        if interval:
+            cursor.execute("UPDATE reminders SET interval = ? WHERE user_id = ?",
+                           (interval, user_id))
+            remind_jobs[user_id].remove()
+            remind_jobs[user_id] = start_job_interval(client, user_id, interval)
+            await message.reply("Установлен интервал напоминаний в "\
+                    f"{interval} минут.")
+        else:
+            cursor.execute("DELETE FROM reminders WHERE user_id = ?", (user_id,))
+            remind_jobs[user_id].remove()
+            remind_jobs.pop(user_id)
+            await message.reply("Напоминания отключены.")
+    else:
+        if interval:
+            cursor.execute("INSERT INTO reminders (user_id, interval) VALUES "\
+                    "(?, ?)", (user_id, interval))
+            remind_jobs[user_id] = start_job_interval(client, user_id, interval)
+            await message.reply("Установлен интервал напоминаний в "\
+                    f"{interval} минут.")
+    db.commit()
+
+
+@app.on_message(filters.private)
+async def respond_any_message(client: Client, message: Message):
+    return await message.reply(texts.PROVIDE_HELP_TEXT)
+
+
+start_intervals(app)
+scheduler.start()
 
 app.run()
 
