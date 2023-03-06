@@ -2,8 +2,10 @@ from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton,\
         CallbackQuery
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.job import Job
 from tools import creds
 from states import State
+from typing import Callable
 import settings
 import texts
 import sqlite3
@@ -29,22 +31,24 @@ db.commit()
 scheduler = AsyncIOScheduler()
 app = Client("todo_bot", api_id, api_hash, bot_token)
 
-def filter_state_wrapper(state):
+def filter_state_wrapper(state) -> Callable[[filters.Filter, Client, Message],
+                                            bool]:
     """Filter wrapper for Pyrogram handler of messages. Pass state 
     from states.State as argument and it will return True if the user is in 
     that state."""
-    def filter_inner(filt, client: Client, update: Message):
+    def filter_inner(filt: filters.Filter, client: Client, update: Message):
         if user_states.get(update.from_user.id) == state:
             return True
         return False
     return filter_inner
 
 
-def filter_callback_wrapper(pattern):
+def filter_callback_wrapper(pattern: str) -> Callable[[filters.Filter, Client,
+                                                       CallbackQuery], bool]:
     """Filter wrapper for Pyrogram handler of callback queries. Pass a regex pattern
     as argument and it will return True if data of callback query matches that
     pattern."""
-    def filter_inner(filt, client: Client, update: CallbackQuery):
+    def filter_inner(filt: filters.Filter, client: Client, update: CallbackQuery) -> bool:
         r = re.match(pattern, update.data)
         if r:
             return True
@@ -52,12 +56,12 @@ def filter_callback_wrapper(pattern):
     return filter_inner
 
 
-def start_job_interval(client: Client, user_id: int, interval: int):
+def start_job_interval(client: Client, user_id: int, interval: int) -> Job:
     return scheduler.add_job(send_reminder, "interval", minutes=interval,
                              args=(client, user_id))
 
 
-def start_intervals(client: Client):
+def start_intervals(client: Client) -> None:
     cursor.execute("SELECT user_id, interval FROM reminders")
     intervals_raw = cursor.fetchall()
 
@@ -65,40 +69,40 @@ def start_intervals(client: Client):
         remind_jobs[user_id] = start_job_interval(client, user_id, interval)
 
 
-async def send_reminder(client: Client, user_id: int):
+async def send_reminder(client: Client, user_id: int) -> None:
     cursor.execute("SELECT * FROM todos WHERE user_id = ? AND completed = 0",
                    (user_id,))
     tasks_raw = cursor.fetchall()
 
     if not tasks_raw:
         return
-    return await client.send_message(user_id, "Не расслабляйтесь, у вас еще "\
+    await client.send_message(user_id, "Не расслабляйтесь, у вас еще "\
             f"{len(tasks_raw)} невыполненных задач!")
 
 
 @app.on_message(filters.command(["start"]))
-async def start(client: Client, message: Message):
+async def start(client: Client, message: Message) -> None:
     user_id = message.from_user.id
     user_states[user_id] = State.NO_STATE
-    return await message.reply("Используйте /help, чтобы получить больше информации.")
+    await message.reply("Используйте /help, чтобы получить больше информации.")
 
 
 @app.on_message(filters.command(["help"]))
-async def help(client: Client, message: Message):
+async def help(client: Client, message: Message) -> None:
     user_id = message.from_user.id
     user_states[user_id] = State.NO_STATE
-    return await message.reply(texts.HELP_TEXT)
+    await message.reply(texts.HELP_TEXT)
 
 
 @app.on_message(filters.command(["add"]))
-async def add(client: Client, message: Message):
+async def add(client: Client, message: Message) -> None:
     user_id = message.from_user.id
     await message.reply("Введите название задачи.")
     user_states[user_id] = State.INPUT_TASK
 
 
 @app.on_message(filters.command(["current"]))
-async def add(client: Client, message: Message):
+async def current(client: Client, message: Message) -> None:
     user_id = message.from_user.id
     
     cursor.execute("SELECT completed FROM todos WHERE user_id = ?", (user_id,))
@@ -113,20 +117,20 @@ async def add(client: Client, message: Message):
     else:
         interval_text = "отключены"
 
-    return await message.reply(texts.CURRENT_TEXT.format(len(all_tasks),
+    await message.reply(texts.CURRENT_TEXT.format(len(all_tasks),
          len(compl_tasks), len(all_tasks) - len(compl_tasks), interval_text))
 
 
 @app.on_message(filters.command(["set_reminder"]))
-async def set_reminder(client: Client, message: Message):
+async def set_reminder(client: Client, message: Message) -> None:
     user_id = message.from_user.id
     user_states[user_id] = State.INPUT_REMIND_TIME
-    return await message.reply("Введите любой интервал получения напоминаний о "\
+    await message.reply("Введите любой интервал получения напоминаний о "\
             "невыполненных задачах в минутах (0, чтобы отключить):")
 
 
 @app.on_message(filters.command(["complete", "delete"]))
-async def choose_task_complete(client: Client, message: Message):
+async def choose_task_complete(client: Client, message: Message) -> None:
     user_id = message.from_user.id
     command = message.command[0].lower()
     cursor.execute("SELECT id, task FROM todos WHERE user_id = ? AND completed = 0",
@@ -134,7 +138,8 @@ async def choose_task_complete(client: Client, message: Message):
     tasks_raw = cursor.fetchall()
 
     if not tasks_raw:
-        return await message.reply("У вас нет невыполненных задач.")
+        await message.reply("У вас нет невыполненных задач.")
+        return
 
     buttons = list()
     current_row = list()
@@ -157,41 +162,43 @@ async def choose_task_complete(client: Client, message: Message):
 
 
 @app.on_message(filters.command(["list"]))
-async def task_list(client: Client, message: Message):
+async def task_list(client: Client, message: Message) -> None:
     user_id = message.from_user.id
     cursor.execute("SELECT task FROM todos WHERE "\
             "user_id = ? AND completed = 0", (user_id,))
     tasks_raw = cursor.fetchall()
 
     if not tasks_raw:
-        return await message.reply("У вас нет невыполненных задач.")
+        await message.reply("У вас нет невыполненных задач.")
+        return
 
     answer = "Невыполненные задачи:\n"
     for (task_name,) in tasks_raw:
         answer += f"- {task_name}\n"
 
-    return await message.reply(answer)
+    await message.reply(answer)
 
 
 @app.on_message(filters.command(["listall"]))
-async def task_list_all(client: Client, message: Message):
+async def task_list_all(client: Client, message: Message) -> None:
     user_id = message.from_user.id
     cursor.execute("SELECT task, completed FROM todos WHERE user_id = ?",
                    (user_id,))
     tasks_raw = cursor.fetchall()
 
     if not tasks_raw:
-        return await message.reply("У вас еще нет каких-либо задач.")
+        await message.reply("У вас еще нет каких-либо задач.")
+        return
 
     answer = "Ваши задачи:\n"
     for task_name, is_completed in tasks_raw[-20:]: # using limit of 20 to not get over 4096 tg message limit
         answer += f"- {task_name} ({texts.TASK_STATE[is_completed]})\n"
-    return await message.reply(answer)
+    await message.reply(answer)
 
 
 @app.on_callback_query(filters.create(
                         filter_callback_wrapper(texts.COMPL_TASK_PATTERN)))
-async def complete_task(client: Client, callback_query: CallbackQuery):
+async def complete_task(client: Client, callback_query: CallbackQuery) -> None:
     callback_data = callback_query.data # data='COMPLETE_TASK=1'
     match = re.search(texts.COMPL_TASK_PATTERN, callback_data)
     task_id = match.group(1)
@@ -205,12 +212,12 @@ async def complete_task(client: Client, callback_query: CallbackQuery):
         return await callback_query.answer(f"Похоже, этой задачи больше нет в "\
                 "вашем списке.")
 
-    return await callback_query.answer("Задача помечена как выполненная.")
+    await callback_query.answer("Задача помечена как выполненная.")
 
 
 @app.on_callback_query(filters.create(
                         filter_callback_wrapper(texts.DEL_TASK_PATTERN)))
-async def complete_task(client: Client, callback_query: CallbackQuery):
+async def delete_task(client: Client, callback_query: CallbackQuery) -> None:
     callback_data = callback_query.data # data='DELETE_TASK=1'
     match = re.search(texts.DEL_TASK_PATTERN, callback_data)
     task_id = match.group(1)
@@ -223,12 +230,12 @@ async def complete_task(client: Client, callback_query: CallbackQuery):
     cursor.execute("DELETE FROM todos WHERE id = ?", (task_id,))
     db.commit()
 
-    return await callback_query.answer("Задача удалена.")
+    await callback_query.answer("Задача удалена.")
 
 
 @app.on_callback_query(filters.create(
                         filter_callback_wrapper(texts.SWITCH_PAGE_PATTERN)))
-async def switch_page(client: Client, callback_query: CallbackQuery):
+async def switch_page(client: Client, callback_query: CallbackQuery) -> None:
     user_id = callback_query.from_user.id
     callback_data = callback_query.data
     if not callback_query.message: # if message is too old and we can't get its object
@@ -256,33 +263,34 @@ async def switch_page(client: Client, callback_query: CallbackQuery):
                         callback_data=f"SWITCH_PAGE={start_ind + 3}_{end_ind + 3}"))
     markup.append(arrows)
     await callback_query.answer()
-    return await callback_query.message.edit_reply_markup(
+    await callback_query.message.edit_reply_markup(
             InlineKeyboardMarkup(markup))
 
 
 @app.on_message(filters.create(filter_state_wrapper(State.INPUT_TASK)))
-async def task_name(client: Client, message: Message):
+async def task_name(client: Client, message: Message) -> None:
     user_id = message.from_user.id
 
     task_name = message.text
     
     if not task_name:
-        return await message.reply("Введите название текстовым сообщением.")
+        await message.reply("Введите название текстовым сообщением.")
+        return
     user_states[user_id] = State.NO_STATE
 
     cursor.execute("INSERT INTO todos (user_id, task, completed) VALUES (?, ?, 0)", 
                    (user_id, task_name))
     db.commit()
-    return await message.reply(f"Задача {task_name} добавлена в ваш список задач.")
+    await message.reply(f"Задача {task_name} добавлена в ваш список задач.")
 
 
 @app.on_message(filters.create(filter_state_wrapper(State.INPUT_REMIND_TIME)))
-async def reminder_time(client: Client, message: Message):
+async def reminder_time(client: Client, message: Message) -> None:
     user_id = message.from_user.id
     interval = message.text
 
     if not interval.isdigit():
-        return await message.reply("Интервал должен быть целым числом в минутах.")
+        await message.reply("Интервал должен быть целым числом в минутах.")
     interval = int(interval)
     user_states[user_id] = State.NO_STATE
 
@@ -312,8 +320,8 @@ async def reminder_time(client: Client, message: Message):
 
 
 @app.on_message(filters.private)
-async def respond_any_message(client: Client, message: Message):
-    return await message.reply(texts.PROVIDE_HELP_TEXT)
+async def respond_any_message(client: Client, message: Message) -> None:
+    await message.reply(texts.PROVIDE_HELP_TEXT)
 
 
 start_intervals(app)
