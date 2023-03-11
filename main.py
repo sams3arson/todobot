@@ -6,15 +6,18 @@ from apscheduler.job import Job
 from tools import creds
 from states import State
 from typing import Callable
+from classes import CachedMarkup
+from pathlib import Path
 import settings
 import texts
 import sqlite3
 import re
 
-user_states = dict()
-cached_markup = dict()
-remind_jobs = dict()
-credentials = creds.get(settings.CREDS_FILE)
+
+user_states: dict[int, State] = dict()
+cached_markup: dict[int, CachedMarkup] = dict()
+remind_jobs: dict[int, Job] = dict()
+credentials = creds.get(Path(settings.CREDS_FILE))
 api_id, api_hash, bot_token = credentials.api_id, credentials.api_hash,\
         credentials.bot_token
 
@@ -142,7 +145,7 @@ async def choose_task_complete(client: Client, message: Message) -> None:
         return
 
     buttons = list()
-    current_row = list()
+    current_row: list[InlineKeyboardButton] = list()
     for task_id, task_name in tasks_raw:
         if len(current_row) == 2:
             buttons.append(current_row)
@@ -158,7 +161,7 @@ async def choose_task_complete(client: Client, message: Message) -> None:
 
     msg = await message.reply(texts.COMMAND_RESPONSE[command],
                               reply_markup=InlineKeyboardMarkup(markup))
-    cached_markup[user_id] = (buttons, msg.id)
+    cached_markup[user_id] = CachedMarkup(buttons, msg.id)
 
 
 @app.on_message(filters.command(["list"]))
